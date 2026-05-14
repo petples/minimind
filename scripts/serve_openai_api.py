@@ -167,7 +167,7 @@ def generate_stream_response(messages, temperature, top_p, max_tokens, tools=Non
         yield json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls" if tool_calls else "stop"}]}, ensure_ascii=False)
 
     except Exception as e:
-        yield json.dumps({"error": str(e)})
+        yield json.dumps({"error": {"message": str(e), "type": "server_error"}}, ensure_ascii=False)
 
 
 @app.post("/v1/chat/completions")
@@ -235,6 +235,16 @@ async def chat_completions(request: ChatRequest, authorization: str | None = Hea
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/")
+async def root():
+    return {"service": "MiniMind OpenAI API", "model": "brain_dpo_v4", "version": "v1.0", "endpoints": {"/v1/chat/completions": "POST", "/health": "GET"}}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "model": "brain_dpo_v4", "device": str(device)}
 
 
 if __name__ == "__main__":
