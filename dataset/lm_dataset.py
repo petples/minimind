@@ -127,7 +127,13 @@ class DPODataset(Dataset):
         self.padding = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
         self.bos_id = tokenizer(f'{tokenizer.bos_token}assistant\n', add_special_tokens=False).input_ids
         self.eos_id = tokenizer(f'{tokenizer.eos_token}\n', add_special_tokens=False).input_ids
-        self.samples = load_dataset('json', data_files=file_path, split='train')
+        # Load JSONL directly to avoid HF datasets disk overhead
+        self.samples = []
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    self.samples.append(json.loads(line))
 
     def __len__(self):
         return len(self.samples)
