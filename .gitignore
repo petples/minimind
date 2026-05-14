@@ -3,4 +3,4 @@ __pycache__/
 .DS_Store
 out
 website/
-docs-minimind/
+docs-minimind/out/pretrain_768.pth
