@@ -13,8 +13,9 @@ import uvicorn
 
 from threading import Thread
 from queue import Queue
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
@@ -23,6 +24,7 @@ from model.model_lora import apply_lora, load_lora
 warnings.filterwarnings('ignore')
 
 app = FastAPI()
+API_TOKEN = "TQaWTatdp5MD782Apm-LIgSNmbAUWZyb-5ptjwS4UqM"  # MiniMind API 認證 token
 
 
 def init_model(args):
@@ -169,7 +171,15 @@ def generate_stream_response(messages, temperature, top_p, max_tokens, tools=Non
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatRequest):
+async def chat_completions(request: ChatRequest, authorization: str | None = Header(None)):
+    """OpenAI-compatible chat completions endpoint."""
+    # ── Token 验证 ──
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid Authorization format, use: Bearer <token>")
+    if authorization[7:] != API_TOKEN:
+        raise HTTPException(status_code=403, detail="Invalid API token")
     try:
         if request.stream:
             return StreamingResponse(
@@ -238,8 +248,15 @@ if __name__ == "__main__":
     parser.add_argument('--max_seq_len', default=8192, type=int, help="最大序列长度")
     parser.add_argument('--use_moe', default=0, type=int, choices=[0, 1], help="是否使用MoE架构（0=否，1=是）")
     parser.add_argument('--inference_rope_scaling', default=False, action='store_true', help="启用RoPE位置编码外推（4倍，仅解决位置编码问题）")
+    parser.add_argument('--api_token', default=None, type=str, help="API 认证 token（Bearer），不设置则跳过认证")
     parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu', type=str, help="运行设备")
     args = parser.parse_args()
     device = args.device
+    if args.api_token:
+        os.environ["MINIMIND_API_TOKEN"] = args.api_token
     model, tokenizer = init_model(args)
-    uvicorn.run(app, host="0.0.0.0", port=8998)
+    if args.api_token:
+        print(f"🔐 API token 认证已启用: {args.api_token[:8]}...")
+    else:
+        print("⚠️  未设置 API token，允许无认证访问")
+    uvicorn.run(app, host="0.0.0.0", port=8999)
