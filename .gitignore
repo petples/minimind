@@ -4,3 +4,5 @@ __pycache__/
 out
 website/
 docs-minimind/out/pretrain_768.pth
+out/brain_sft_768.pth
+checkpoints/*.pth
