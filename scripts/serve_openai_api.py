@@ -255,12 +255,12 @@ async def chat_completions(request: ChatRequest, authorization: str | None = Hea
 
 @app.get("/")
 async def root():
-    return {"service": "MiniMind OpenAI API", "model": "brain_dpo_v4", "version": "v1.0", "endpoints": {"/v1/chat/completions": "POST", "/health": "GET"}}
+    return {"service": "MiniMind OpenAI API", "model": args.weight, "version": "v1.0", "endpoints": {"/v1/chat/completions": "POST", "/health": "GET"}}
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model": "brain_dpo_v4", "device": str(device)}
+    return {"status": "ok", "model": args.weight, "device": str(device)}
 
 
 @app.get("/debug/suppress")
