@@ -41,6 +41,8 @@ def init_model(args):
             inference_rope_scaling=args.inference_rope_scaling
         ))
         model.load_state_dict(torch.load(ckp, map_location=device), strict=True)
+        # 抑制特殊 token 生成
+        model._suppress_ids = [0, 1, 2, 25, 26]  # pad, im_start, im_end, <think>, </think>
         if args.lora_weight != 'None':
             apply_lora(model)
             load_lora(model, f'../{args.save_dir}/lora/{args.lora_weight}_{args.hidden_size}.pth')
@@ -216,7 +218,7 @@ async def chat_completions(request: ChatRequest, authorization: str | None = Hea
             with torch.no_grad():
                 generated_ids = model.generate(
                     inputs["input_ids"],
-                    max_length=inputs["input_ids"].shape[1] + request.max_tokens,
+                    max_new_tokens=request.max_tokens,
                     do_sample=True,
                     attention_mask=inputs["attention_mask"],
                     pad_token_id=tokenizer.pad_token_id,
@@ -257,6 +259,28 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "ok", "model": "brain_dpo_v4", "device": str(device)}
+
+
+@app.get("/debug/suppress")
+async def debug_suppress():
+    ids = getattr(model, '_suppress_ids', 'NOT SET')
+    return {"_suppress_ids": ids, "model_type": type(model).__name__}
+
+
+@app.post("/debug/generate")
+async def debug_generate(request: ChatRequest):
+    """Debug endpoint: run generation and return raw token IDs."""
+    new_prompt = tokenizer.apply_chat_template(request.messages, tokenize=False, add_generation_prompt=True, open_thinking=False)
+    inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True, max_length=args.max_seq_len - request.max_tokens).to(device)
+    with torch.no_grad():
+        out = model.generate(inputs["input_ids"], max_new_tokens=request.max_tokens, do_sample=True, temperature=request.temperature, top_p=request.top_p, eos_token_id=2)
+    new_tokens = out[0][inputs["input_ids"].shape[1]:]
+    return {
+        "num_tokens": len(new_tokens),
+        "token_ids": new_tokens.tolist(),
+        "text": tokenizer.decode(new_tokens, skip_special_tokens=True),
+        "text_raw": tokenizer.decode(new_tokens, skip_special_tokens=False)
+    }
 
 
 if __name__ == "__main__":

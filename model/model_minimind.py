@@ -265,35 +265,49 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
             try:
                 outputs = self.forward(input_ids[:, past_len:], attention_mask, past_key_values, use_cache=use_cache, **kwargs)
             except Exception:
-                # Generation failed mid-stream — fill remaining with eos
                 if streamer:
                     streamer.put(torch.full((input_ids.shape[0], 1), eos_token_id, device=input_ids.device).cpu())
                     streamer.end()
                 return input_ids
             attention_mask = torch.cat([attention_mask, attention_mask.new_ones(attention_mask.shape[0], 1)], -1) if attention_mask is not None else None
             logits = outputs.logits[:, -1, :] / temperature
-            if repetition_penalty != 1.0:
-                for i in range(input_ids.shape[0]):
-                    seen = torch.unique(input_ids[i]); score = logits[i, seen]; logits[i, seen] = torch.where(score > 0, score / repetition_penalty, score * repetition_penalty)
-            if top_k > 0: 
-                logits[logits < torch.topk(logits, top_k)[0][..., -1, None]] = -float('inf')
-            if top_p < 1.0:
-                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                mask = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1) > top_p
-                mask[..., 1:], mask[..., 0] = mask[..., :-1].clone(), 0
-                logits[mask.scatter(1, sorted_indices, mask)] = -float('inf')
-            # ── 防禦：logits 含 NaN/Inf 時 fallback 到 eos ──
-            if torch.isnan(logits).any() or torch.isinf(logits).any():
-                next_token = torch.full((input_ids.shape[0], 1), eos_token_id, device=input_ids.device)
+            # ── 抑制特殊 token ──
+            suppress_ids = [0, 1, 2]
+            if hasattr(self, '_suppress_ids'):
+                suppress_ids = self._suppress_ids
+            for sid in suppress_ids:
+                logits[:, sid] = -float('inf')
+            # ── 全部被抑制 → 均勻取非抑制 token ──
+            if logits.isfinite().sum() == 0:
+                logits.fill_(-float('inf'))
+                for i in range(logits.shape[-1]):
+                    if i not in suppress_ids:
+                        logits[:, i] = 0.0
+                next_token = torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1)
+                next_token = next_token.clamp(0, self.config.vocab_size - 1)
             else:
-                probs = torch.softmax(logits, dim=-1)
-                # ── 防禦：softmax 產出 NaN 時 fallback ──
-                if torch.isnan(probs).any():
+                if repetition_penalty != 1.0:
+                    for i in range(input_ids.shape[0]):
+                        seen = torch.unique(input_ids[i]); score = logits[i, seen]; logits[i, seen] = torch.where(score > 0, score / repetition_penalty, score * repetition_penalty)
+                if top_k > 0:
+                    logits[logits < torch.topk(logits, top_k)[0][..., -1, None]] = -float('inf')
+                if top_p < 1.0:
+                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                    mask = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1) > top_p
+                    mask[..., 1:], mask[..., 0] = mask[..., :-1].clone(), 0
+                    logits[mask.scatter(1, sorted_indices, mask)] = -float('inf')
+                # ── 防禦 ──
+                if torch.isnan(logits).any():
+                    next_token = torch.full((input_ids.shape[0], 1), eos_token_id, device=input_ids.device)
+                elif logits.isfinite().sum() == 0:
                     next_token = torch.full((input_ids.shape[0], 1), eos_token_id, device=input_ids.device)
                 else:
-                    next_token = torch.multinomial(probs, num_samples=1) if do_sample else torch.argmax(logits, dim=-1, keepdim=True)
-                    # ── 防禦：clamp 到 vocab 範圍防止 TextStreamer tokenizer.decode 崩潰 ──
-                    next_token = next_token.clamp(0, self.config.vocab_size - 1)
+                    probs = torch.softmax(logits, dim=-1)
+                    if torch.isnan(probs).any():
+                        next_token = torch.full((input_ids.shape[0], 1), eos_token_id, device=input_ids.device)
+                    else:
+                        next_token = torch.multinomial(probs, num_samples=1) if do_sample else torch.argmax(logits, dim=-1, keepdim=True)
+                        next_token = next_token.clamp(0, self.config.vocab_size - 1)
             if eos_token_id is not None: next_token = torch.where(finished.unsqueeze(-1), next_token.new_full((next_token.shape[0], 1), eos_token_id), next_token)
             input_ids = torch.cat([input_ids, next_token], dim=-1)
             past_key_values = outputs.past_key_values if use_cache else None
