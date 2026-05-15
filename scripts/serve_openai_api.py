@@ -40,12 +40,33 @@ def init_model(args):
             use_moe=bool(args.use_moe),
             inference_rope_scaling=args.inference_rope_scaling
         ))
-        model.load_state_dict(torch.load(ckp, map_location=device), strict=True)
+        model.load_state_dict(torch.load(ckp, map_location='cpu'), strict=True)
         # 抑制特殊 token 生成
         model._suppress_ids = [0, 1, 2, 25, 26]  # pad, im_start, im_end, <think>, </think>
         if args.lora_weight != 'None':
             apply_lora(model)
-            load_lora(model, f'../{args.save_dir}/lora/{args.lora_weight}_{args.hidden_size}.pth')
+            lora_names = [n.strip() for n in args.lora_weight.split(',')]
+            lora_dir = f'../{args.save_dir}/lora'
+            if len(lora_names) == 1:
+                load_lora(model, f'{lora_dir}/{lora_names[0]}_{args.hidden_size}.pth')
+            else:
+                # Merge multiple LoRAs: sum state_dicts (additive stacking)
+                merged = None
+                for name in lora_names:
+                    path = f'{lora_dir}/{name}_{args.hidden_size}.pth'
+                    w = torch.load(path, map_location='cpu')
+                    if merged is None:
+                        merged = w
+                    else:
+                        for k, v in w.items():
+                            merged[k] = merged[k] + v
+                # Load merged weights into LoRA params
+                model_state = model.state_dict()
+                for k, v in merged.items():
+                    if k in model_state:
+                        model_state[k].copy_(v.to(model_state[k].device))
+                stacked = ' + '.join(lora_names)
+                print(f'[LoRA] Stacked {len(lora_names)} adapters: {stacked}')
     else:
         model = AutoModelForCausalLM.from_pretrained(args.load_from, trust_remote_code=True)
     print(f'MiniMind模型参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.2f} M(illion)')
@@ -290,7 +311,7 @@ if __name__ == "__main__":
     parser.add_argument('--load_from', default='../model', type=str, help="模型加载路径（model=原生torch权重，其他路径=transformers格式）")
     parser.add_argument('--save_dir', default='out', type=str, help="模型权重目录")
     parser.add_argument('--weight', default='full_sft', type=str, help="权重名称前缀（pretrain, full_sft, dpo, reason, ppo_actor, grpo, spo）")
-    parser.add_argument('--lora_weight', default='None', type=str, help="LoRA权重名称（None表示不使用，可选：lora_identity, lora_medical）")
+    parser.add_argument('--lora_weight', default='None', type=str, help="LoRA权重名称，多个用逗号分隔（如 lora_elementary,lora_middle_school），None=不使用")
     parser.add_argument('--hidden_size', default=768, type=int, help="隐藏层维度")
     parser.add_argument('--num_hidden_layers', default=8, type=int, help="隐藏层数量")
     parser.add_argument('--max_seq_len', default=8192, type=int, help="最大序列长度")
