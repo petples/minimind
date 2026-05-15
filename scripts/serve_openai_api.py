@@ -55,7 +55,7 @@ class ChatRequest(BaseModel):
     messages: list
     temperature: float = 0.7
     top_p: float = 0.92
-    max_tokens: int = 8192
+    max_tokens: int = 512
     stream: bool = True
     tools: list = []
     open_thinking: bool = False
@@ -108,7 +108,8 @@ def parse_response(text):
 def generate_stream_response(messages, temperature, top_p, max_tokens, tools=None, open_thinking=False):
     try:
         new_prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, tools=tools or None, open_thinking=open_thinking)
-        inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True, max_length=args.max_seq_len - max_tokens).to(device)
+        safe_max_len = max(1, args.max_seq_len - max_tokens)
+        inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True, max_length=safe_max_len).to(device)
 
         queue = Queue()
         streamer = CustomStreamer(tokenizer, queue)
@@ -210,7 +211,8 @@ async def chat_completions(request: ChatRequest, authorization: str | None = Hea
                 tools=request.tools or None,
                 open_thinking=request.get_open_thinking()
             )
-            inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True, max_length=args.max_seq_len - request.max_tokens).to(device)
+            safe_max_len = max(1, args.max_seq_len - request.max_tokens)
+            inputs = tokenizer(new_prompt, return_tensors="pt", truncation=True, max_length=safe_max_len).to(device)
             with torch.no_grad():
                 generated_ids = model.generate(
                     inputs["input_ids"],
