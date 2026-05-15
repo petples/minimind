@@ -262,7 +262,14 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
         if streamer: streamer.put(input_ids.cpu())
         for _ in range(max_new_tokens):
             past_len = past_key_values[0][0].shape[1] if past_key_values else 0
-            outputs = self.forward(input_ids[:, past_len:], attention_mask, past_key_values, use_cache=use_cache, **kwargs)
+            try:
+                outputs = self.forward(input_ids[:, past_len:], attention_mask, past_key_values, use_cache=use_cache, **kwargs)
+            except Exception:
+                # Generation failed mid-stream — fill remaining with eos
+                if streamer:
+                    streamer.put(torch.full((input_ids.shape[0], 1), eos_token_id, device=input_ids.device).cpu())
+                    streamer.end()
+                return input_ids
             attention_mask = torch.cat([attention_mask, attention_mask.new_ones(attention_mask.shape[0], 1)], -1) if attention_mask is not None else None
             logits = outputs.logits[:, -1, :] / temperature
             if repetition_penalty != 1.0:
@@ -275,7 +282,13 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
                 mask = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1) > top_p
                 mask[..., 1:], mask[..., 0] = mask[..., :-1].clone(), 0
                 logits[mask.scatter(1, sorted_indices, mask)] = -float('inf')
-            next_token = torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1) if do_sample else torch.argmax(logits, dim=-1, keepdim=True)
+            # ── 防禦：所有 logits 為 NaN 時 fallback 到 eos ──
+            if torch.isnan(logits).all() or torch.isinf(logits).all():
+                next_token = torch.full((input_ids.shape[0], 1), eos_token_id, device=input_ids.device)
+            else:
+                next_token = torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1) if do_sample else torch.argmax(logits, dim=-1, keepdim=True)
+                # ── 防禦：clamp 到 vocab 範圍防止 embed 壞 token ──
+                next_token = next_token.clamp(0, self.config.vocab_size - 1)
             if eos_token_id is not None: next_token = torch.where(finished.unsqueeze(-1), next_token.new_full((next_token.shape[0], 1), eos_token_id), next_token)
             input_ids = torch.cat([input_ids, next_token], dim=-1)
             past_key_values = outputs.past_key_values if use_cache else None
