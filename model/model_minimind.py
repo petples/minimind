@@ -282,13 +282,18 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
                 mask = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1) > top_p
                 mask[..., 1:], mask[..., 0] = mask[..., :-1].clone(), 0
                 logits[mask.scatter(1, sorted_indices, mask)] = -float('inf')
-            # ── 防禦：所有 logits 為 NaN 時 fallback 到 eos ──
-            if torch.isnan(logits).all() or torch.isinf(logits).all():
+            # ── 防禦：logits 含 NaN/Inf 時 fallback 到 eos ──
+            if torch.isnan(logits).any() or torch.isinf(logits).any():
                 next_token = torch.full((input_ids.shape[0], 1), eos_token_id, device=input_ids.device)
             else:
-                next_token = torch.multinomial(torch.softmax(logits, dim=-1), num_samples=1) if do_sample else torch.argmax(logits, dim=-1, keepdim=True)
-                # ── 防禦：clamp 到 vocab 範圍防止 embed 壞 token ──
-                next_token = next_token.clamp(0, self.config.vocab_size - 1)
+                probs = torch.softmax(logits, dim=-1)
+                # ── 防禦：softmax 產出 NaN 時 fallback ──
+                if torch.isnan(probs).any():
+                    next_token = torch.full((input_ids.shape[0], 1), eos_token_id, device=input_ids.device)
+                else:
+                    next_token = torch.multinomial(probs, num_samples=1) if do_sample else torch.argmax(logits, dim=-1, keepdim=True)
+                    # ── 防禦：clamp 到 vocab 範圍防止 TextStreamer tokenizer.decode 崩潰 ──
+                    next_token = next_token.clamp(0, self.config.vocab_size - 1)
             if eos_token_id is not None: next_token = torch.where(finished.unsqueeze(-1), next_token.new_full((next_token.shape[0], 1), eos_token_id), next_token)
             input_ids = torch.cat([input_ids, next_token], dim=-1)
             past_key_values = outputs.past_key_values if use_cache else None
