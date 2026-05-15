@@ -8,6 +8,7 @@ __package__ = "scripts"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import time
 import torch
+import traceback
 import warnings
 import uvicorn
 
@@ -167,6 +168,7 @@ def generate_stream_response(messages, temperature, top_p, max_tokens, tools=Non
         yield json.dumps({"choices": [{"delta": {}, "finish_reason": "tool_calls" if tool_calls else "stop"}]}, ensure_ascii=False)
 
     except Exception as e:
+        traceback.print_exc()
         yield json.dumps({"error": {"message": str(e), "type": "server_error"}}, ensure_ascii=False)
 
 
@@ -180,6 +182,13 @@ async def chat_completions(request: ChatRequest, authorization: str | None = Hea
         raise HTTPException(status_code=401, detail="Invalid Authorization format, use: Bearer <token>")
     if authorization[7:] != API_TOKEN:
         raise HTTPException(status_code=403, detail="Invalid API token")
+    # ── 參數驗證 ──
+    if request.max_tokens < 1 or request.max_tokens > args.max_seq_len:
+        raise HTTPException(status_code=400, detail=f"max_tokens must be between 1 and {args.max_seq_len}")
+    if request.temperature < 0 or request.temperature > 2:
+        raise HTTPException(status_code=400, detail="temperature must be between 0 and 2")
+    if request.top_p < 0 or request.top_p > 1:
+        raise HTTPException(status_code=400, detail="top_p must be between 0 and 1")
     try:
         if request.stream:
             return StreamingResponse(
@@ -234,6 +243,7 @@ async def chat_completions(request: ChatRequest, authorization: str | None = Hea
                 ]
             }
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
