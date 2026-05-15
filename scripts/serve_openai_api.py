@@ -56,7 +56,7 @@ class ChatRequest(BaseModel):
     model: str
     messages: list
     temperature: float = 0.7
-    top_p: float = 0.92
+    top_p: float = 0.85
     max_tokens: int = 512
     stream: bool = True
     tools: list = []
@@ -123,6 +123,7 @@ def generate_stream_response(messages, temperature, top_p, max_tokens, tools=Non
                 do_sample=True,
                 temperature=temperature,
                 top_p=top_p,
+                repetition_penalty=1.20,
                 attention_mask=inputs.attention_mask,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
@@ -220,6 +221,7 @@ async def chat_completions(request: ChatRequest, authorization: str | None = Hea
                     inputs["input_ids"],
                     max_new_tokens=request.max_tokens,
                     do_sample=True,
+                    repetition_penalty=1.20,
                     attention_mask=inputs["attention_mask"],
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
